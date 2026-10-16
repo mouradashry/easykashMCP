@@ -1,0 +1,19 @@
+[project]
+name = "easykash-mcp"
+version = "0.1.0"
+description = "Read-only MySQL tools for ChatGPT over MCP"
+requires-python = ">=3.12"
+dependencies = ["fastmcp==2.14.7", "mysql-connector-python==9.7.0"]
+
+[dependency-groups]
+dev = ["pytest>=8,<9"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["server"]
