@@ -42,31 +42,18 @@ GitHub stores the source code; GitHub Pages cannot run this Python service, and 
    OAUTH_AUDIENCE=https://easykash-mcp
    AUTH0_CLIENT_ID=<Auth0 Regular Web Application client ID>
    AUTH0_CLIENT_SECRET=<enter securely in Render>
-   REDIS_URL=<rediss://username:password@redis-host:port/0>
-   OAUTH_STORAGE_KEY=<stable generated Fernet key>
    ```
 
    `OAUTH_JWKS_URI` is no longer needed: `Auth0Provider` discovers the upstream configuration and sends the API audience during authorization and token exchange. Keep the MySQL variables and trusted CA file configured.
-5. Deploy the container. `Auth0Provider` must retrieve Auth0's HTTPS discovery configuration at startup. The service exposes MCP at `/mcp`, OAuth discovery, dynamic client registration, and `/auth/callback`. Consent remains enabled. OAuth registrations, pending flows, and tokens are stored in external Redis with Fernet encryption. HTTP startup requires `REDIS_URL` and `OAUTH_STORAGE_KEY`; it never falls back to ephemeral disk. Keep the Auth0 client secret stable because it derives the proxy's default JWT signing key.
-
-   Create a Redis database with persistent storage, for example a managed Redis service accessible from Render. Use its **Redis protocol TLS URL** (`rediss://`), not an HTTPS REST API URL. The implementation preserves TLS with hostname/certificate verification, Redis ACL username, password and database selection. URL query parameters are rejected to prevent disabling TLS verification. Set a no-eviction policy where supported; provider expiry, eviction, deletion, or loss of Redis data can still invalidate sessions. Use a dedicated database for this deployment, and keep the same Redis database and encryption key across releases.
-
-   Generate the encryption key **once** in your local terminal or a trusted shell with the dependencies installed:
-
-   ```sh
-   .venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
-   ```
-
-   Paste it directly into Render's secret environment settings as `OAUTH_STORAGE_KEY`; do not send it in chat or commit it. Set `REDIS_URL` securely there too. Changing the key makes previously encrypted state unreadable. The Redis host must be reachable from Render and its CA must be trusted. Redis availability is required during OAuth operations.
-
-6. After the first migration to Redis, remove the old ChatGPT connection and create a fresh OAuth connection to `https://easykashmcp.onrender.com/mcp`, allowing automatic client registration when offered. Do not enter the upstream Auth0 application secret into ChatGPT: the server holds that secret and handles Auth0; ChatGPT registers with the MCP proxy. The proxy handles forwarding back to ChatGPT after the Auth0 callback.
+5. Deploy the container. `Auth0Provider` must retrieve Auth0's HTTPS discovery configuration at startup. The service exposes MCP at `/mcp`, OAuth discovery, dynamic client registration, and `/auth/callback`. Consent remains enabled. The container uses the writable `FASTMCP_HOME=/tmp/fastmcp` for encrypted OAuth state; on ephemeral hosting, a redeploy can erase registrations and require reconnection. For durable sessions use persistent storage and a single instance, or configure a shared storage backend before scaling. Do not rotate the Auth0 client secret casually, because it also derives the default state encryption/signing key.
+6. Remove the old ChatGPT connection and create a fresh OAuth connection to `https://easykashmcp.onrender.com/mcp`, allowing automatic client registration when offered. Do not enter the upstream Auth0 application secret into ChatGPT: the server holds that secret and handles Auth0; ChatGPT registers with the MCP proxy. The proxy handles forwarding back to ChatGPT after the Auth0 callback.
 7. Sign in through Auth0 and complete the consent flow, then verify discovery of `list_tables`, `describe_table`, `read_rows`, and `query_sql`. Read a small authorized result and compare it against MySQL.
 
 An Auth0 account, public HTTPS hosting, and network access to RDS remain prerequisites. There is no unauthenticated remote mode. The tools support table inspection, filtered row reads and validated read-only analytics SQL. Aggregations scan matching database rows before limiting output, so large scans can time out. Restrict SELECT grants to approved tables/views; a database-wide account lets `query_sql` read every table it can access. Views and their definitions must also be trusted.
 
 ## Validation status
 
-`pytest` exercises MCP tool discovery and calls using a mocked database, identifier/row-limit rejection, parameter binding, TLS/read-only connection setup, and failure when HTTP authentication settings are absent. An additional local HTTP test uses mocked Auth0 discovery and a shared fake Redis server to verify registration survives provider recreation, stored values are encrypted, and audience forwarding, OAuth metadata/PKCE, dynamic registration, and rejection of unauthenticated MCP requests. These checks do not establish connectivity to RDS or completion of a ChatGPT OAuth flow. Those require deployment settings and credentials.
+`pytest` exercises MCP tool discovery and calls using a mocked database, identifier/row-limit rejection, parameter binding, TLS/read-only connection setup, and failure when HTTP authentication settings are absent. An additional local HTTP test uses mocked Auth0 discovery to verify audience forwarding, OAuth metadata/PKCE, dynamic registration, and rejection of unauthenticated MCP requests. These checks do not establish connectivity to RDS or completion of a ChatGPT OAuth flow. Those require deployment settings and credentials.
 
 ## Analytics queries
 
