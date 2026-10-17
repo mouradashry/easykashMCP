@@ -25,7 +25,7 @@ def test_mcp_tools():
 
     async def run():
         async with Client(server.create_server()) as client:
-            assert {t.name for t in await client.list_tools()} == {'list_tables', 'describe_table', 'read_rows'}
+            assert {t.name for t in await client.list_tools()} == {'list_tables', 'describe_table', 'read_rows', 'query_sql'}
             result = await client.call_tool('list_tables', {})
             assert result.structured_content['result'][0]['name'] == 'orders'
             result = await client.call_tool('describe_table', {'table': 'orders'})
@@ -184,3 +184,73 @@ def test_redis_url_cannot_override_tls_verification(monkeypatch):
     monkeypatch.setenv('REDIS_URL', 'rediss://redis.example.com?ssl_cert_reqs=none')
     with pytest.raises(RuntimeError, match='query parameters'):
         server.oauth_storage()
+
+
+@pytest.mark.parametrize('sql', [
+    'DELETE FROM orders', 'UPDATE orders SET amount=0',
+    'SELECT 1; DROP TABLE orders',
+    "SELECT * FROM orders INTO OUTFILE '/tmp/export'",
+    'SELECT * FROM orders FOR UPDATE',
+    'SELECT * FROM orders LOCK IN SHARE MODE',
+    'SELECT SLEEP(30)', 'SELECT BENCHMARK(100000, 1)',
+    "SELECT LOAD_FILE('/etc/passwd')", 'SELECT custom_function(id) FROM orders',
+    "SELECT GET_LOCK('x', 10)", 'SELECT @x := 1', 'SELECT @@version',
+    'SELECT * FROM mysql.user', 'SELECT * FROM other.orders',
+    'WITH RECURSIVE x AS (SELECT 1 UNION ALL SELECT 1 FROM x) SELECT * FROM x',
+    'SELECT * FROM orders LIMIT ?',
+])
+def test_query_rejects_unsafe_sql(sql):
+    with pytest.raises(ValueError):
+        server.validated_query(sql, 100, 'easykash-live')
+
+
+def test_query_analytics_and_limits():
+    query = server.validated_query("""
+        WITH totals AS (
+          SELECT merchant_id, SUM(amount) AS gmv FROM payments
+          WHERE created_at >= '2026-10-01' AND created_at < '2026-11-01'
+          GROUP BY merchant_id
+        ) SELECT m.name, t.gmv FROM totals t JOIN merchants m ON m.id=t.merchant_id
+          ORDER BY t.gmv DESC LIMIT 20
+    """, 100, 'easykash-live')
+    assert 'SUM(amount)' in query and 'LIMIT 20' in query
+    assert server.validated_query('SELECT * FROM orders LIMIT 10000', 100, 'db').endswith('LIMIT 101')
+    assert server.validated_query('SELECT * FROM orders', 500, 'db').endswith('LIMIT 501')
+    assert server.validated_query('SELECT * FROM orders LIMIT 0', 100, 'db').endswith('LIMIT 0')
+    assert 'MAX_EXECUTION_TIME' not in server.validated_query(
+        'SELECT /*+ MAX_EXECUTION_TIME(999999) */ * FROM orders', 100, 'db')
+    assert 'DROP' not in server.validated_query('SELECT 1 /* DROP TABLE orders */', 100, 'db')
+    server.validated_query("SELECT DATE_FORMAT(created_at, '%Y-%m'), SUM(amount) FROM payments GROUP BY 1", 100, 'db')
+    server.validated_query('SELECT id, ROW_NUMBER() OVER (ORDER BY id) FROM orders', 100, 'db')
+
+
+def test_query_tool_results_and_timeout(monkeypatch):
+    import asyncio
+    from unittest.mock import MagicMock
+    monkeypatch.setenv('MYSQL_DATABASE', 'easykash-live')
+    connection = MagicMock()
+    cursor = connection.cursor.return_value
+    cursor.column_names = ('merchant', 'gmv')
+    cursor.fetchmany.return_value = [('A', Decimal('12.50')), ('B', Decimal('5.00'))]
+    @contextmanager
+    def fake_db():
+        yield connection
+    async def run():
+        async with Client(server.create_server()) as client:
+            result = await client.call_tool('query_sql', {
+                'sql': 'SELECT merchant, SUM(amount) AS gmv FROM payments GROUP BY merchant',
+                'max_rows': 1,
+            })
+            assert result.structured_content == {
+                'columns': ['merchant', 'gmv'], 'rows': [['A', '12.50']], 'truncated': True,
+            }
+            statements = [call.args[0] for call in cursor.execute.call_args_list]
+            assert statements[0] == 'SET SESSION MAX_EXECUTION_TIME = 10000'
+            assert statements[1].endswith('LIMIT 2')
+            cursor.close.assert_called_once()
+            before = connection.cursor.call_count
+            with pytest.raises(Exception):
+                await client.call_tool('query_sql', {'sql': 'DROP TABLE payments'})
+            assert connection.cursor.call_count == before
+    with patch.object(server, 'database', fake_db):
+        asyncio.run(run())

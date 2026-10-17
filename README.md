@@ -1,12 +1,13 @@
 # MySQL MCP for ChatGPT
 
-A read-only Python MCP server with three tools:
+A read-only Python MCP server with four tools:
 
 - `list_tables`: discover tables/views in one configured database.
 - `describe_table`: inspect columns, types, and keys.
 - `read_rows`: select explicit columns with optional equality filters, capped at 500 rows.
+- `query_sql`: run one validated SELECT for joins, aggregates, nonrecursive CTEs, and window functions, capped at 500 output rows.
 
-It does not execute arbitrary SQL. Identifiers are checked against database metadata and quoted; values use bound parameters. Each connection starts a read-only transaction. Use a dedicated MySQL account granted **SELECT only** on the specific tables ChatGPT should see. Data returned by these tools is sent to the connected client; choose grants accordingly.
+`read_rows` checks identifiers against metadata and binds filter values. `query_sql` parses MySQL SQL with SQLGlot, accepts one SELECT/UNION, rejects writes, locking, variables, file access, recursive CTEs and cross-database references, and permits only reviewed analytics built-ins (no stored functions or UDFs). It executes normalized SQL with user comments/hints removed, a result limit, and a 10-second session execution timeout. SQL validation complements database permissions; it is not a replacement for them. Each connection starts a read-only transaction. Use a dedicated MySQL account granted **SELECT only** on the specific tables ChatGPT should see. Data returned by these tools is sent to the connected client; choose grants accordingly.
 
 ## Develop
 
@@ -59,10 +60,19 @@ GitHub stores the source code; GitHub Pages cannot run this Python service, and 
    Paste it directly into Render's secret environment settings as `OAUTH_STORAGE_KEY`; do not send it in chat or commit it. Set `REDIS_URL` securely there too. Changing the key makes previously encrypted state unreadable. The Redis host must be reachable from Render and its CA must be trusted. Redis availability is required during OAuth operations.
 
 6. After the first migration to Redis, remove the old ChatGPT connection and create a fresh OAuth connection to `https://easykashmcp.onrender.com/mcp`, allowing automatic client registration when offered. Do not enter the upstream Auth0 application secret into ChatGPT: the server holds that secret and handles Auth0; ChatGPT registers with the MCP proxy. The proxy handles forwarding back to ChatGPT after the Auth0 callback.
-7. Sign in through Auth0 and complete the consent flow, then verify discovery of `list_tables`, `describe_table`, and `read_rows`. Read a small authorized result and compare it against MySQL.
+7. Sign in through Auth0 and complete the consent flow, then verify discovery of `list_tables`, `describe_table`, `read_rows`, and `query_sql`. Read a small authorized result and compare it against MySQL.
 
-An Auth0 account, public HTTPS hosting, and network access to RDS remain prerequisites. There is no unauthenticated remote mode. The tools support table inspection and filtered row reads; arbitrary SQL and aggregation queries are not implemented.
+An Auth0 account, public HTTPS hosting, and network access to RDS remain prerequisites. There is no unauthenticated remote mode. The tools support table inspection, filtered row reads and validated read-only analytics SQL. Aggregations scan matching database rows before limiting output, so large scans can time out. Restrict SELECT grants to approved tables/views; a database-wide account lets `query_sql` read every table it can access. Views and their definitions must also be trusted.
 
 ## Validation status
 
 `pytest` exercises MCP tool discovery and calls using a mocked database, identifier/row-limit rejection, parameter binding, TLS/read-only connection setup, and failure when HTTP authentication settings are absent. An additional local HTTP test uses mocked Auth0 discovery and a shared fake Redis server to verify registration survives provider recreation, stored values are encrypted, and audience forwarding, OAuth metadata/PKCE, dynamic registration, and rejection of unauthenticated MCP requests. These checks do not establish connectivity to RDS or completion of a ChatGPT OAuth flow. Those require deployment settings and credentials.
+
+## Analytics queries
+
+After deploying, refresh the custom app's tools in ChatGPT so it discovers `query_sql`.
+Inspect actual tables and column names first, and clarify the business metric (for example GMV versus successful payment count), reporting timezone, and date range before querying. Do not assume merchant/payment table names or success status values.
+
+`query_sql(sql, max_rows=100)` returns `columns`, `rows` (arrays aligned with columns), and `truncated`. Decimal amounts remain strings to preserve precision. For example, request “Top 20 merchants by successful GMV for October 2026” and let ChatGPT inspect the schema and construct a grouped SELECT. Use half-open timestamp ranges (`>=` start, `<` next month) with the correct timezone. A truncated result describes output rows, not incomplete aggregate inputs.
+
+The MySQL user must have SELECT only on approved tables/views and no FILE or EXECUTE privileges. Read-only transactions and SQL validation provide additional restrictions. Live analytics, performance and MySQL-version compatibility still require validation on the deployed service; local tests mock the database and test parsing, limits, rejected statements, tool calls, and result serialization.
