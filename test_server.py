@@ -49,9 +49,12 @@ def test_mcp_tools():
 def test_database_tls_and_read_only(monkeypatch):
     for name in ['MYSQL_HOST', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DATABASE']:
         monkeypatch.setenv(name, 'test')
+    monkeypatch.setenv('MYSQL_SSL_CA', '/app/certs/rds-us-east-1-bundle.pem')
     with patch.object(server.mysql.connector, 'connect') as connect:
         with server.database():
             pass
+        assert connect.call_args.kwargs['use_pure'] is True
+        assert connect.call_args.kwargs['ssl_ca'] == '/app/certs/rds-us-east-1-bundle.pem'
         assert connect.call_args.kwargs['ssl_verify_identity'] is True
         assert connect.call_args.kwargs['ssl_verify_cert'] is True
         connect.return_value.start_transaction.assert_called_once_with(readonly=True)

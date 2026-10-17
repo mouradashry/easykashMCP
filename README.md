@@ -19,7 +19,7 @@ uv run pytest -q
 
 Use the existing checkout; a separate Git worktree is unnecessary.
 
-Set the MySQL variables in `.env.example` through your host's secret settings or shell environment. The example file is a template; the server does not load it automatically. Never commit passwords. TLS certificate and hostname verification are required. For RDS, obtain the current regional CA bundle from the official Amazon RDS trust store and set `MYSQL_SSL_CA` to its local path. Do not disable certificate verification.
+Set the MySQL variables in `.env.example` through your host's secret settings or shell environment. The example file is a template; the server does not load it automatically. Never commit passwords. TLS certificate and hostname verification are required. The Docker image uses the Python base image’s system CA certificates and downloads the official us-east-1 RDS bundle over verified HTTPS from `truststore.pki.rds.amazonaws.com`, checks that it parses as a certificate bundle, and sets `MYSQL_SSL_CA=/app/certs/rds-us-east-1-bundle.pem`. Remove any conflicting Render override or set it to that exact path. Native Python deployments must obtain the regional RDS CA bundle and set `MYSQL_SSL_CA` to its local path. The server uses the pure-Python MySQL connector to avoid bundled C-client trust-path errors. Do not disable certificate verification.
 
 The intended database host is `easykashbackendreplica.ct8lliybav4s.us-east-1.rds.amazonaws.com`. The database/schema is `easykash-live`; a restricted account still needs configuration. Host the server where it can reach RDS on TCP 3306, preferably inside the appropriate AWS VPC. Keep RDS private and allow traffic from the server's security group.
 

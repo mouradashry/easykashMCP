@@ -28,6 +28,8 @@ def database():
         connection_timeout=10,
         read_timeout=15,
         write_timeout=15,
+        # Avoid bundled C-client trust-path errors; retain TLS verification.
+        use_pure=True,
         ssl_disabled=False,
         ssl_verify_cert=True,
         ssl_verify_identity=True,
