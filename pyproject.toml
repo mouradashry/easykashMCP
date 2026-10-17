@@ -3,10 +3,10 @@ name = "easykash-mcp"
 version = "0.1.0"
 description = "Read-only MySQL tools for ChatGPT over MCP"
 requires-python = ">=3.12"
-dependencies = ["fastmcp==2.14.7", "mysql-connector-python==9.7.0"]
+dependencies = ["fastmcp==2.14.7", "mysql-connector-python==9.7.0", "py-key-value-aio[redis]==0.3.0", "redis>=5,<9", "cryptography>=43,<51"]
 
 [dependency-groups]
-dev = ["pytest>=8,<9"]
+dev = ["pytest>=8,<9", "fakeredis>=2.34,<3"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

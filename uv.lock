@@ -334,23 +334,33 @@ name = "easykash-mcp"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "fastmcp" },
     { name = "mysql-connector-python" },
+    { name = "py-key-value-aio", extra = ["redis"] },
+    { name = "redis" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "fakeredis" },
     { name = "pytest" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=43,<51" },
     { name = "fastmcp", specifier = "==2.14.7" },
     { name = "mysql-connector-python", specifier = "==9.7.0" },
+    { name = "py-key-value-aio", extras = ["redis"], specifier = "==0.3.0" },
+    { name = "redis", specifier = ">=5,<9" },
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8,<9" }]
+dev = [
+    { name = "fakeredis", specifier = ">=2.34,<3" },
+    { name = "pytest", specifier = ">=8,<9" },
+]
 
 [[package]]
 name = "email-validator"

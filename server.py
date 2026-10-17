@@ -8,6 +8,11 @@ import os
 import mysql.connector
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.auth0 import Auth0Provider
+from cryptography.fernet import Fernet
+from key_value.aio.stores.redis import RedisStore
+from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
+from redis.asyncio import Redis
+from urllib.parse import urlsplit
 
 
 def required(name):
@@ -127,6 +132,27 @@ def create_server(auth=None):
     return mcp
 
 
+def oauth_storage():
+    """Shared, encrypted OAuth state. Never silently fall back to ephemeral disk."""
+    url = required("REDIS_URL")
+    parsed = urlsplit(url)
+    if parsed.scheme != "rediss" or not parsed.hostname:
+        raise RuntimeError("REDIS_URL must use rediss:// for verified TLS")
+    if parsed.query or parsed.fragment:
+        raise RuntimeError("REDIS_URL must not contain query parameters or a fragment")
+    key = required("OAUTH_STORAGE_KEY")
+    try:
+        cipher = Fernet(key.encode("ascii"))
+    except (ValueError, UnicodeError):
+        raise RuntimeError("OAUTH_STORAGE_KEY must be a valid Fernet key") from None
+    # RedisStore(url=...) in this dependency does not preserve TLS URL options.
+    client = Redis.from_url(
+        url, decode_responses=True, ssl_cert_reqs="required",
+        ssl_check_hostname=True, socket_connect_timeout=10, socket_timeout=10,
+    )
+    return FernetEncryptionWrapper(key_value=RedisStore(client=client), fernet=cipher)
+
+
 def main():
     transport = os.getenv("MCP_TRANSPORT", "stdio")
     if transport == "stdio":
@@ -142,6 +168,7 @@ def main():
             base_url=required("MCP_PUBLIC_URL"),
             redirect_path="/auth/callback",
             required_scopes=["mysql:read"],
+            client_storage=oauth_storage(),
         )
         create_server(auth).run(transport="http", host="0.0.0.0",
                                 port=int(os.getenv("PORT", "8000")), stateless_http=True)

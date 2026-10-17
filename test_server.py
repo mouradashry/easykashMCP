@@ -70,6 +70,8 @@ def test_remote_fails_without_auth(monkeypatch):
 
 def test_auth0_proxy_discovery_and_registration(monkeypatch, tmp_path):
     import fastmcp
+    import fakeredis.aioredis
+    from cryptography.fernet import Fernet
     from fastmcp.server.auth.oidc_proxy import OIDCConfiguration
     from starlette.testclient import TestClient
 
@@ -81,6 +83,8 @@ def test_auth0_proxy_discovery_and_registration(monkeypatch, tmp_path):
         'MCP_PUBLIC_URL': 'https://easykashmcp.onrender.com',
         'AUTH0_CLIENT_ID': 'test-client',
         'AUTH0_CLIENT_SECRET': 'test-only-not-a-real-secret',
+        'REDIS_URL': 'rediss://redis.example.com:6379/0',
+        'OAUTH_STORAGE_KEY': Fernet.generate_key().decode(),
     }.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(fastmcp.settings, 'home', tmp_path)
@@ -93,6 +97,8 @@ def test_auth0_proxy_discovery_and_registration(monkeypatch, tmp_path):
         token_endpoint=issuer + 'oauth/token',
         jwks_uri=issuer + '.well-known/jwks.json',
     )
+    shared_redis = fakeredis.FakeServer()
+    monkeypatch.setattr(server.Redis, 'from_url', lambda *a, **kw: fakeredis.aioredis.FakeRedis(server=shared_redis, decode_responses=True))
     with patch.object(server.Auth0Provider, 'get_oidc_configuration', return_value=configuration), \
             patch.object(server, 'create_server') as create:
         server.main()
@@ -116,7 +122,65 @@ def test_auth0_proxy_discovery_and_registration(monkeypatch, tmp_path):
             'response_types': ['code'],
         })
         assert registration.status_code == 201, registration.text
-        assert registration.json()['client_id']
+        registered_id = registration.json()['client_id']
+        assert registered_id
         response = client.post('/mcp', json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'},
                                headers={'Accept': 'application/json, text/event-stream'})
         assert response.status_code == 401
+
+    # A new provider has no in-memory registration from the first process.
+    with patch.object(server.Auth0Provider, 'get_oidc_configuration', return_value=configuration), \
+            patch.object(server, 'create_server') as create:
+        server.main()
+        restarted_auth = create.call_args.args[0]
+    assert restarted_auth is not auth
+    with TestClient(server.create_server(restarted_auth).http_app(stateless_http=True)) as client:
+        response = client.get('/authorize', params={
+            'client_id': registered_id,
+            'redirect_uri': 'https://chatgpt.com/connector_platform/oauth/callback',
+            'response_type': 'code', 'scope': 'mysql:read',
+            'state': 'test-state', 'code_challenge': 'a' * 43,
+            'code_challenge_method': 'S256',
+        })
+        assert response.status_code == 200, response.text
+        assert 'Client Not Registered' not in response.text
+
+    import asyncio
+    async def verify_encrypted():
+        client = fakeredis.aioredis.FakeRedis(server=shared_redis, decode_responses=True)
+        values = [await client.get(key) for key in await client.keys('*')]
+        assert values
+        assert all('test-chatgpt' not in value for value in values)
+        await client.aclose()
+    asyncio.run(verify_encrypted())
+
+
+@pytest.mark.parametrize('url', ['redis://public.example.com:6379', 'https://redis.example.com'])
+def test_oauth_storage_requires_tls(monkeypatch, url):
+    monkeypatch.setenv('REDIS_URL', url)
+    with pytest.raises(RuntimeError, match='rediss://'):
+        server.oauth_storage()
+
+
+def test_oauth_storage_requires_stable_key(monkeypatch):
+    monkeypatch.setenv('REDIS_URL', 'rediss://redis.example.com:6379')
+    monkeypatch.setenv('OAUTH_STORAGE_KEY', 'not-a-valid-key')
+    with pytest.raises(RuntimeError, match='valid Fernet key'):
+        server.oauth_storage()
+
+
+def test_redis_tls_client_options(monkeypatch):
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv('REDIS_URL', 'rediss://redis.example.com:6379')
+    monkeypatch.setenv('OAUTH_STORAGE_KEY', Fernet.generate_key().decode())
+    storage = server.oauth_storage()
+    client = storage.key_value._client
+    options = client.connection_pool.connection_kwargs
+    assert options['ssl_cert_reqs'] == 'required'
+    assert options['ssl_check_hostname'] is True
+
+
+def test_redis_url_cannot_override_tls_verification(monkeypatch):
+    monkeypatch.setenv('REDIS_URL', 'rediss://redis.example.com?ssl_cert_reqs=none')
+    with pytest.raises(RuntimeError, match='query parameters'):
+        server.oauth_storage()
