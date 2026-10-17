@@ -60,6 +60,60 @@ def test_database_tls_and_read_only(monkeypatch):
 
 def test_remote_fails_without_auth(monkeypatch):
     monkeypatch.setenv('MCP_TRANSPORT', 'http')
-    monkeypatch.delenv('OAUTH_JWKS_URI', raising=False)
-    with pytest.raises(RuntimeError, match='OAUTH_JWKS_URI'):
+    monkeypatch.delenv('OAUTH_ISSUER', raising=False)
+    with pytest.raises(RuntimeError, match='OAUTH_ISSUER'):
         server.main()
+
+
+def test_auth0_proxy_discovery_and_registration(monkeypatch, tmp_path):
+    import fastmcp
+    from fastmcp.server.auth.oidc_proxy import OIDCConfiguration
+    from starlette.testclient import TestClient
+
+    issuer = 'https://tenant.auth0.com/'
+    for name, value in {
+        'MCP_TRANSPORT': 'http',
+        'OAUTH_ISSUER': issuer,
+        'OAUTH_AUDIENCE': 'https://easykash-mcp',
+        'MCP_PUBLIC_URL': 'https://easykashmcp.onrender.com',
+        'AUTH0_CLIENT_ID': 'test-client',
+        'AUTH0_CLIENT_SECRET': 'test-only-not-a-real-secret',
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(fastmcp.settings, 'home', tmp_path)
+    configuration = OIDCConfiguration(
+        issuer=issuer,
+        response_types_supported=['code'],
+        subject_types_supported=['public'],
+        id_token_signing_alg_values_supported=['RS256'],
+        authorization_endpoint=issuer + 'authorize',
+        token_endpoint=issuer + 'oauth/token',
+        jwks_uri=issuer + '.well-known/jwks.json',
+    )
+    with patch.object(server.Auth0Provider, 'get_oidc_configuration', return_value=configuration), \
+            patch.object(server, 'create_server') as create:
+        server.main()
+        auth = create.call_args.args[0]
+        assert auth._extra_authorize_params['audience'] == 'https://easykash-mcp'
+        assert auth._extra_token_params['audience'] == 'https://easykash-mcp'
+        assert auth._redirect_path == '/auth/callback'
+    app = server.create_server(auth).http_app(stateless_http=True)
+    with TestClient(app) as client:
+        metadata = client.get('/.well-known/oauth-authorization-server')
+        assert metadata.status_code == 200
+        data = metadata.json()
+        assert data['authorization_endpoint'].startswith('https://easykashmcp.onrender.com/')
+        assert 'S256' in data['code_challenge_methods_supported']
+        assert 'mysql:read' in data['scopes_supported']
+        registration = client.post('/register', json={
+            'client_name': 'test-chatgpt',
+            'redirect_uris': ['https://chatgpt.com/connector_platform/oauth/callback'],
+            'token_endpoint_auth_method': 'none',
+            'grant_types': ['authorization_code', 'refresh_token'],
+            'response_types': ['code'],
+        })
+        assert registration.status_code == 201, registration.text
+        assert registration.json()['client_id']
+        response = client.post('/mcp', json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'},
+                               headers={'Accept': 'application/json, text/event-stream'})
+        assert response.status_code == 401

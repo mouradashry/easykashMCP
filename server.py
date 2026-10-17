@@ -7,8 +7,7 @@ import os
 
 import mysql.connector
 from fastmcp import FastMCP
-from fastmcp.server.auth import RemoteAuthProvider
-from fastmcp.server.auth.providers.jwt import JWTVerifier
+from fastmcp.server.auth.providers.auth0 import Auth0Provider
 
 
 def required(name):
@@ -132,12 +131,16 @@ def main():
         create_server().run(transport="stdio")
     elif transport == "http":
         # Remote access always requires OAuth; no unauthenticated HTTP mode.
-        auth = RemoteAuthProvider(
-            token_verifier=JWTVerifier(jwks_uri=required("OAUTH_JWKS_URI"),
-                issuer=required("OAUTH_ISSUER"), audience=required("OAUTH_AUDIENCE"),
-                algorithm="RS256", required_scopes=["mysql:read"]),
-            authorization_servers=[required("OAUTH_ISSUER")],
-            base_url=required("MCP_PUBLIC_URL"), resource_name="MySQL read-only")
+        auth = Auth0Provider(
+            config_url=required("OAUTH_ISSUER").rstrip("/")
+                + "/.well-known/openid-configuration",
+            client_id=required("AUTH0_CLIENT_ID"),
+            client_secret=required("AUTH0_CLIENT_SECRET"),
+            audience=required("OAUTH_AUDIENCE"),
+            base_url=required("MCP_PUBLIC_URL"),
+            redirect_path="/auth/callback",
+            required_scopes=["mysql:read"],
+        )
         create_server(auth).run(transport="http", host="0.0.0.0",
                                 port=int(os.getenv("PORT", "8000")), stateless_http=True)
     else:
